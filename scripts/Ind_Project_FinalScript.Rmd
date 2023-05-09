@@ -1,0 +1,523 @@
+---
+title: "Independent Project: Ancient DNA"
+author: "Caroline S."
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    toc: yes
+    toc_float: yes
+    theme: sandstone
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning=FALSE)
+
+```
+
+# Introduction
+
+Recent advancements in DNA sequencing technologies have enabled the
+analysis of ancient DNA from a wide range of archaeological samples,
+from human remains to environmental materials.
+
+The study of ancient DNA has revolutionized our understanding of human
+evolution, migration patterns, and population dynamics, and has shed
+light on the interactions between humans and their environment
+throughout history.
+
+In this project, I explore the use of R for analyzing ancient DNA data,
+including quality control, data filtering, and statistical analyses.
+
+My aim is to provide a comprehensive guide for researchers interested in
+using R for analyzing ancient DNA data, and to showcase the potential of
+R for advancing our understanding of human history and evolution.
+
+# Libraries
+
+```{r message=FALSE}
+
+#if (!requireNamespace("BiocManager", quietly=TRUE))
+#    install.packages("BiocManager")
+
+#install.packages("devtools")
+#devtools::install_github("bodkan/admixr")
+#BiocManager::install("bedtools")
+#BiocManager::install("gdsfmt")
+#BiocManager::install("SNPRelate")
+#install.packages("adegenet")
+#install.packages("mapdata")
+#install.packages("qqman")
+library(admixr)
+library(tidyverse)
+library(here)
+library("devtools")
+library(gdsfmt)
+library(SNPRelate)
+library(adegenet)
+library(ggplot2)
+library(dplyr)
+library(ggmap)
+library(maps)
+library(mapdata)
+library(data.table)
+library(rrBLUP)
+library(qqman)
+
+
+```
+
+# Data
+
+## Background Info on Data
+
+The field of aDNA has revolutionized our understanding of the past by
+providing insights into the genetic history of extinct and present-day
+populations. The availability of large-scale datasets, such as the Allen
+Ancient DNA Resource (AADR) dataset, has facilitated the analysis of
+genetic variation in thousands of individuals from different time
+periods and geographic locations.
+
+There are two AADR datasets: **"1240K"** : Ancient and present-day
+individuals (from either shotgun sequencing data or in-solution target
+capture, with a range of coverages) at 1,233,013 sites,
+
+**"1240K+HO"**: Data from the above set merged with present-day
+individuals typed on the Human Origins array with 597,573 sites.
+
+(We will be using **"1240K+HO"**)
+
+All data released here: (a) have already been published (some by our
+group and some by other groups - see full list of references below), (b)
+have permissions appropriate for fully public data release, (c) have
+data reported for a set of 1,233,013 sites in the genome (or 597,573
+sites for present-day individuals genotyped on the Affymetrix Human
+Origins array). For most individuals, genetic data are represented by
+randomly sampled sequences at positions covered by at least one
+sequence.
+
+both dataset comes in multiple files organized:
+
+*.anno*: Rich meta-information for each individual. *.ind* : Three
+columns: Individual ID, sex determination, and group label (population).
+*.snp* : Information on each analyzed SNP position (SNP id,
+physical/genetic location and reference/variant alleles, where the
+reference allele matches hg19). *.geno*: Genotypes
+
+## Reading In The Data
+
+-   This section involves reading in data files and downloading
+    annotation information from the AADR dataset (v54.1.p1_HO_public).
+
+-   The 'prefix' variable is used to specify the directory path where
+    the data files are located.
+
+-   The 'list.files' function is then used to list all the files with
+    the prefix in the specified directory.
+
+-   The 'read.table' function is used to read in the SNP and individual
+    information files with explicit file encoding (UTF-8) from the data
+    directory using the 'here' package.
+
+-   Finally, the 'anno_url' variable is used to specify the URL of the
+    annotation file for the dataset. The 'read.table' function is again
+    used to read in the annotation information with the appropriate
+    parameters for the file format and fill option.
+
+-   The .anno file is read directly from the AADR website:
+    <https://reich.hms.harvard.edu/allen-ancient-dna-resource-aadr-downloadable-genotypes-present-day-and-ancient-dna-data>
+    \*
+
+```{r}
+prefix <- here("data","v54.1.p1_HO_public")
+list.files(path = dirname(prefix), pattern = basename(prefix), full.names = TRUE)
+
+
+# Read in the SNP information with explicit file encoding
+snp <- read.table(here::here("data","v54.1.p1_HO_public.snp"), header = FALSE, fileEncoding = "UTF-8")
+
+# Read in the individual information with explicit file encoding
+ind <- read.table(here::here("data","v54.1.p1_HO_public.ind"), header = FALSE, fileEncoding = "UTF-8")
+
+# Read in the annotation information
+anno_url <- "https://reichdata.hms.harvard.edu/pub/datasets/amh_repo/curated_releases/V54/V54.1.p1/SHARE/public.dir/v54.1.p1_HO_public.anno"
+anno <- read.table(anno_url, header = TRUE, sep = "\t", fill = TRUE)
+```
+
+# Data Wrangling
+
+## Filtering Out Transversions Only
+
+Link to softwares: <https://reich.hms.harvard.edu/software>
+
+Eigenstrat is a software package used for population genetic analysis.
+It was designed to perform principal component analysis (PCA) on large
+genotype datasets in order to infer population structure and identify
+genetic differences among populations.
+
+Here, the eigenstrat function is called from the snpMatrix package to
+read in the genotype data stored in the EIGENSTRAT format files (.geno,
+.snp, .ind).
+
+-   The resulting object snps is an instance of the SnpMatrix class, a
+    binary matrix representation of the genotype data.
+
+-   The transversions_only function is then applied to snps, which
+    filters out SNPs that have undergone a transition (purine to purine
+    or pyrimidine to pyrimidine) rather than a transversion (purine to
+    pyrimidine or vice versa).
+
+    -   Transversions are generally considered to be more informative
+        for evolutionary analyses, as they occur less frequently than
+        transitions.
+
+    -   The resulting object new_snps is also an instance of the
+        SnpMatrix class, but with only the transversion SNPs included.
+
+```{r}
+snps <- eigenstrat(prefix) #read in the genotype data stored in the EIGENSTRAT format files (.geno, .snp, .ind)
+
+# read in the EIGENSTRAT object containing the remaining SNPs
+new_snps <- transversions_only(snps)
+```
+
+## Performing PCA
+
+PCA: Principal Component Analysis.
+
+-   It is a statistical technique used to analyze and reduce
+    high-dimensional datasets by transforming the data into a
+    lower-dimensional space, while still retaining as much of the
+    original variation as possible.
+
+-   PCA can be used to identify patterns and relationships in the data
+    and to explore the structure of complex datasets.
+
+-   In genetics, PCA is often used to visualize genetic relationships
+    between individuals and populations, and to identify genetic
+    differences and similarities among different groups.
+
+    In this section, the SNP data is read in from the new_snps object,
+    which is an EIGENSTRAT object that contains the remaining SNPs after
+    filtering for transversions.
+
+    -   The SNP data is then converted to a matrix using data.matrix(),
+        which is required for performing principal component analysis
+        (PCA).
+
+    -   The prcomp() function is used to perform PCA on the SNP matrix,
+        which reduces the dimensionality of the data and identifies
+        patterns of variation among samples.
+
+    -   Finally, the summary() function is used to view the results of
+        the PCA, which includes information about the proportion of
+        variance explained by each principal component and the loadings
+        (i.e., correlations between the original SNP variables and the
+        principal components).
+
+```{r}
+
+# Read in the SNP data
+snps <- read.table(new_snps$snp)
+
+# Convert the SNP data to a matrix
+snps_mat <- data.matrix(snps)
+
+# Perform PCA on the SNP data
+pca_results <- prcomp(snps_mat)
+
+# View the PCA results
+summary(pca_results)
+
+
+```
+
+## Subsetting South American Samples
+
+In this section, a list of South American countries is created and
+stored as south_american_countries.
+
+-   Then, the data is filtered for samples that belong to the countries
+    in the south_american_countries list.
+
+    -   This is done by subsetting the anno dataframe using the filter()
+        function from the dplyr package, selecting only the rows where
+        the Political.
+
+    -   Entity column matches one of the South American countries. The
+        resulting subset of data is stored as south_america_data and the
+        first 6 rows are displayed using the head() function.
+
+    ```{r}
+    # Create a list of South American countries
+    south_american_countries <- c("Argentina", "Bolivia", "Brazil", "Chile", "Colombia", "Ecuador", "Guyana", "Paraguay", "Peru", "Suriname", "Uruguay", "Venezuela")
+
+    # Filter the data for South American samples
+    south_america_data <- anno %>%
+      filter(Political.Entity %in% south_american_countries) #the given column name for countries: Political.Entity
+
+    head(south_america_data)
+    ```
+
+## Merging .ind file and .anno "South America" subset
+
+This section of code is preparing the metadata for the samples that were
+used in the analysis.
+
+-   First, the column names in the .ind file are renamed to match the
+    column names in the summary table.
+
+-   Then, select() function is used to keep only the desired columns
+    from the .ind file and the south_america_data data frames.
+
+-   Next, the two data frames are merged based on the Genetic.ID and
+    Group.ID columns.
+
+-   The resulting merged_df data frame is then subsetted to keep only
+    the columns for Genetic.ID, Group.ID, Sex, Political.Entity, Lat.,
+    and Long., and the column names are renamed as needed.
+
+-   The resulting data frame contains the metadata for the samples used
+    in the analysis, including their geographic location (latitude and
+    longitude) and the country they belong to. head() function is then
+    used to display the first few rows of the resulting data frame.
+
+```{r}
+
+# rename the columns in the .ind file to match the summary table
+colnames(ind) <- c("Genetic.ID", "Sex", "Group.ID")
+
+# select the columns to keep from the ind data frame
+ind_subset <- ind %>%
+  select(Genetic.ID, Group.ID, Sex)
+
+# select the columns to keep from the south_america_data data frame
+south_america_subset <- south_america_data %>%
+  select(Genetic.ID, Group.ID, Political.Entity, Lat., Long.)
+
+# merge the two data frames
+merged_df <- merge(ind, south_america_data, by = c("Genetic.ID", "Group.ID"))
+
+# select only the desired columns
+merged_df <- merged_df[, c("Genetic.ID", "Group.ID", "Sex", "Political.Entity", "Lat.", "Long." )]
+
+# rename the columns as needed
+colnames(merged_df) <- c("Genetic.ID", "Group.ID", "Sex", "Country","Lat.", "Long.")
+
+head(merged_df)
+```
+
+## Grouping Samples By Country
+
+This section is summarizing the populations for each country based on
+the merged data frame created in the previous section.
+
+-   The group_by() function is used to group the merged data frame by
+    country, and then the summarize() function is used to create a new
+    data frame that summarizes each country's population.
+
+-   The paste() function is used to concatenate the different Group IDs
+    within each country, separated by commas, and the resulting string
+    is stored in the populations column of the country_summary data
+    frame.
+
+-   Finally, the print() function is used to display the country_summary
+    data frame on the console.
+
+```{r}
+# summarize populations for each country
+country_summary <- merged_df %>%
+  group_by(Country) %>%
+  summarize(populations = paste(Group.ID, collapse = ", "))
+print(country_summary)
+```
+
+# Plotting
+
+## Plot Country Summary
+
+This section summarizes the populations for each country included in the
+merged dataset.
+
+-   The merged_df data frame is first grouped by country using the
+    group_by() function from the dplyr package, and then the summarize()
+    function is used to count the number of populations in each country
+    with the n() function.
+
+-   The resulting country_summary data frame contains two columns:
+    Country and populations.
+
+Then, a bar plot of the population sizes by country is created using the
+ggplot2 package.
+
+-   The country_summary data frame is used as the data source, and the
+    aes() function is used to map Country to the x-axis and populations
+    to the y-axis.
+-   geom_bar() is used to create the bar plot, and the stat = "identity"
+    argument is included to indicate that the height of each bar should
+    be determined by the actual values in populations.
+-   Finally, labs() is used to set the title and axis labels for the
+    plot.
+
+```{r}
+
+# summarize populations for each country
+country_summary <- merged_df %>%
+  group_by(Country) %>%
+  summarize(populations = n())
+
+# create bar plot of country populations
+country_plot <- ggplot(country_summary, aes(x = Country, y = populations)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Population Sizes by Country", x = "Country", y = "Population Size")
+print(country_plot)
+
+ggsave(file = here("output", "country_plot.png"), plot = country_plot)
+
+
+```
+
+## Creating Scatterplot
+
+In this section, the latitude and longitude columns of the merged_df
+data frame are converted from characters to numerics because they were
+originally read in as character data types.
+
+-   Any rows in the merged_df data frame that contain NA values in the
+    Lat. or Long. columns are removed using the complete.cases()
+    function.
+
+-   Finally, a scatter plot is created using the ggplot2 package to
+    visualize the geographic distribution of the samples. Each data
+    point represents a sample, with the color indicating the country of
+    origin.
+
+```{r}
+#changing coordinates to numeric because character wasn't continuous
+merged_df$Lat. <- as.numeric(merged_df$Lat.)
+merged_df$Long. <- as.numeric(merged_df$Long.)
+merged_df <- merged_df[complete.cases(merged_df[c("Lat.", "Long.")]), ] #remove rows that have NAs in coordinate columns
+
+# Create scatter plot of data points
+samples_plot <- ggplot(merged_df, aes(x = Long., y = Lat., color = Country)) +
+  geom_point(alpha = 0.5, size = 3) +
+  labs(title = "Geographic Distribution of Samples")
+
+print(samples_plot)
+
+ggsave(file = here("output", "samples_plot.png"), plot = samples_plot)
+
+```
+
+## Add South America Map
+
+In this section, a plot is created to display the geographic
+distribution of the samples included in the dataset.
+
+-   The plot is generated using the ggplot2 package in R and includes a
+    map of South America, with markers representing the coordinates of
+    each sample.
+
+-   Additionally, the color of the markers represents the country where
+    each sample was collected.
+
+-   The plot is created in two steps: first, a scatter plot of the
+    sample coordinates is generated, and then the map of South America
+    is added as a layer to the plot.
+
+```{r}
+
+# Next, use the ggplot() function to create a new plot object
+map_plot <- ggplot()+ 
+  borders("world", xlim=c(-85, -30), ylim=c(-60, 15)) +
+  theme(panel.background = element_blank()) + # Use the borders() function to add a map of South America to the plot 
+  geom_point(data = merged_df, aes(x = Long., y = Lat., color = Country),alpha = 0.5) + # Use the geom_point() function to add markers for the coordinates in the data frame 
+  scale_color_discrete(name = "Country") + # Use the scale_color_discrete() function to set the color scale to a discrete scale
+  theme(panel.background = element_blank(), # Use the theme() function to customize the appearance of the map
+
+               axis.title = element_blank(),
+               axis.text = element_blank(),
+               axis.ticks = element_blank())
+
+print(map_plot)
+
+ggsave(file = here("output", "map_plot.png"), plot = map_plot)
+
+```
+
+## Manhattan Plot
+
+*What is a Manhattan Plot?* A Manhattan plot is a graphical
+representation of the results of a genome-wide association study (GWAS).
+
+In a GWAS, genetic markers called single nucleotide polymorphisms (SNPs)
+are analyzed for association with a particular trait or disease.
+
+A Manhattan plot displays the -log10-transformed p-values of the SNPs on
+the y-axis, and their physical positions on the x-axis (usually by
+chromosome).
+
+In the plot, each point represents a SNP, and the height of the point
+represents its significance, with higher points indicating more
+significant associations.
+
+The plot is called a "Manhattan plot" because the shape of the plot can
+resemble the skyline of Manhattan.
+
+Manhattan plots are useful for visualizing genome-wide association
+results because they allow researchers to quickly identify genomic
+regions that contain SNPs that are associated with the trait or disease
+of interest.
+
+These regions may contain candidate genes or regulatory elements that
+could be further investigated for their role in the trait or disease.
+
+-   In this section, the code renames columns in the SNP data frame,
+    converts Ref_Allele and Alt_Allele to numeric values, adds a column
+    for p-values, calculates the p-values for each SNP, selects the
+    needed columns for a plot, and finally creates a Manhattan plot
+    using the ggplot2 library.
+
+```{r}
+#change names of columns in snp data frame
+colnames(snps) <- c("SNP_ID", "Chromosome", "Genetic_Distance", "Position", "Ref_Allele", "Alt_Allele")
+
+# Convert Ref_Allele and Alt_Allele to numeric values
+snps$Ref_Num <- ifelse(snps$Ref_Allele == "A", 1, ifelse(snps$Ref_Allele == "C", 2, ifelse(snps$Ref_Allele == "G", 3, ifelse(snps$Ref_Allele == "T", 4, NA))))
+snps$Alt_Num <- ifelse(snps$Alt_Allele == "A", 1, ifelse(snps$Alt_Allele == "C", 2, ifelse(snps$Alt_Allele == "G", 3, ifelse(snps$Alt_Allele == "T", 4, NA))))
+
+# Add a column for p-values
+snps <- cbind(snps, p_value = rep(NA, 597573))
+
+# Calculate the p-values for each SNP
+snps[, "p_value"] <- apply(snps[, c("Ref_Num", "Alt_Num")], 1, function(x) {
+  het <- min(x)
+  hom_alt <- max(x)
+  hom_ref <- 1 - het - hom_alt
+  chisq <- ((het - 0.5)^2)/0.5 + ((hom_alt - 1)^2)/1 + ((hom_ref - 0)^2)/1
+  1 - pchisq(chisq, 1)
+})
+
+#select the needed columns for plot
+snps <- snps[, c("SNP_ID", "Chromosome", "Position", "p_value")]
+
+# Chrom column is originally integer must be numeric
+snps$Chromosome <- as.numeric(snps$Chromosome)
+
+# Print the modified data frame
+head(snps)
+
+# Make the Manhattan plot 
+manhattan(x = snps, chr = "Chromosome", snp = "SNP_ID",bp = "Position", p = "p_value" )
+
+
+```
+
+What it should look like 👀  
+\|\
+\|\
+\|\
+\|\
+ V
+
+![](https://genome.sph.umich.edu/w/images/c/cc/Sample-manhattan-plot.png)
